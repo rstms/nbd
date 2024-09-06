@@ -1,0 +1,15 @@
+#!/bin/ksh
+
+daemon="/usr/local/bin/netbootd"
+daemon_user=netboot
+daemon_flags=
+rc_stop_signal=TERM
+rc_reload_signal=HUP
+
+. /etc/rc.d/rc.subr
+
+rc_start() {
+    rc_exec "${daemon} ${daemon_flags}"
+}
+
+rc_cmd $1

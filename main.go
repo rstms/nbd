@@ -1,186 +1,157 @@
 package main
 
 import (
-	"embed"
-	"encoding/base64"
+	"context"
+	"flag"
 	"fmt"
-	"github.com/gin-gonic/gin"
-	"github.com/sashabaranov/go-fastapi"
-	"io"
-	"io/fs"
+	"github.com/rstms/netbootd/netboot"
+	"github.com/sevlyar/go-daemon"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
-	"regexp"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
-const netbootDir = "/var/www/netboot"
+const serverName = "netbootd"
+const SHUTDOWN_TIMEOUT = 5
 
-// https://github.com/swagger-api/swagger-ui
-//
-//go:embed swagger
-var swagger embed.FS
+var (
+	signalFlag = flag.String("s", "", `send signal:
+    stop - shutdown
+    reload - reload config
+    `)
+	shutdown = make(chan struct{})
+	reload   = make(chan struct{})
+)
 
-// https://github.com/Redocly/redoc
-//
-//go:embed redoc
-var redoc embed.FS
+func handleEndpoints(w http.ResponseWriter, r *http.Request) {
 
-type Config struct {
-	Address string `json:"address"`
-	OS      string `json:"os"`
-	Version string `json:"version"`
-	Config  string `json:"config"`
-}
-
-type Host struct {
-	Address string `json:"address"`
-}
-
-type Response struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
-}
-
-type HostListResponse struct {
-	Success   bool     `json:"success"`
-	Message   string   `json:"message"`
-	Addresses []string `json:"addresses"`
-}
-
-var MAC_PATTERN = regexp.MustCompile(`^([0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})$`)
-
-func AddHostHandler(ctx *gin.Context, in Config) (out Response, herr error) {
-
-	out.Success = false
-	if !MAC_PATTERN.MatchString(in.Address) {
-		out.Message = "invalid MAC address"
-		return
-	}
-	var osMenuPathname string
-	var responsePathname string
-	switch in.OS {
-	case "debian":
-		osMenuPathname = filepath.Join(netbootDir, "netboot-debian.ipxe")
-		responsePathname = filepath.Join(netbootDir, fmt.Sprintf("%s-preseed.conf", in.Address))
-	case "openbsd":
-		osMenuPathname = filepath.Join(netbootDir, "netboot-openbsd.ipxe")
-		responsePathname = filepath.Join(netbootDir, fmt.Sprintf("%s-install.conf", in.Address))
-	default:
-		out.Message = "Unrecognized OS"
-		return
-	}
-
-	osFile, err := os.Open(osMenuPathname)
-	if err != nil {
-		out.Message = fmt.Sprintf("failed opening %s: %v", osMenuPathname, err)
-		return
-	}
-	defer osFile.Close()
-	hostMenuPathname := filepath.Join(netbootDir, fmt.Sprintf("%s.ipxe", in.Address))
-	hostFile, err := os.Create(hostMenuPathname)
-	if err != nil {
-		out.Message = fmt.Sprintf("failed opening %s: %v", hostMenuPathname, err)
-		return
-	}
-	defer hostFile.Close()
-	_, err = io.Copy(osFile, hostFile)
-	if err != nil {
-		out.Message = fmt.Sprintf("failed copying %s to %s: %v", osMenuPathname, hostMenuPathname, err)
-		return
-	}
-
-	decodedBytes, err := base64.StdEncoding.DecodeString(in.Config)
-	if err != nil {
-		out.Message = fmt.Sprintf("failed decoding response data: %v", err)
-		return
-	}
-
-	err = os.WriteFile(responsePathname, decodedBytes, 0640)
-	if err != nil {
-		out.Message = fmt.Sprintf("failed writing %s: %v", responsePathname, err)
-		return
-	}
-
-	if in.OS == "debian" {
-		err = compileInitrd(in, responsePathname)
-		if err != nil {
-			out.Message = fmt.Sprintf("failed compiling initrd: %v", err)
+	fmt.Printf("Request: %s %s %s (%d)\n", r.RemoteAddr, r.Method, r.RequestURI, r.ContentLength)
+	switch r.Method {
+	case "GET":
+		switch r.URL.Path {
+		case "/hosts/":
+			netboot.ListHostsHandler(w, r)
+			return
+		}
+	case "PUT":
+		switch r.URL.Path {
+		case "/host/":
+			netboot.AddHostHandler(w, r)
+			return
+		}
+	case "DELETE":
+		switch r.URL.Path {
+		case "/host/":
+			netboot.DeleteHostHandler(w, r)
+			return
+		}
+	case "POST":
+		switch r.URL.Path {
+		case "/tarball/":
+			netboot.UploadPackageHandler(w, r)
 			return
 		}
 	}
+	http.Error(w, "WAT", http.StatusNotFound)
 
-	out.Success = true
-	out.Message = fmt.Sprintf("%s configured", in.Address)
-	return
 }
 
-func compileInitrd(in Config, responsePathname string) error {
-	return fmt.Errorf("unimplemented")
-}
+func runServer(addr *string, port *int) {
 
-func DeleteHostHandler(ctx *gin.Context, in Host) (out Response, err error) {
-	out.Success = false
-	out.Message = "DeleteHost unimplemented"
-	return
-}
-
-func ListHostsHandler(ctx *gin.Context, in Host) (out HostListResponse, err error) {
-	out.Success = false
-	out.Message = "ListHosts unimplemented"
-	out.Addresses = make([]string, 0)
-	return
-}
-
-func CheckErr(msg string, err error) {
-	if err != nil {
-		log.Fatalf("%s: %v", msg, err)
-		os.Exit(1)
+	listen := fmt.Sprintf("%s:%d", *addr, *port)
+	server := &http.Server{
+		Addr:    listen,
+		Handler: http.HandlerFunc(handleEndpoints),
 	}
+
+	go func() {
+		log.Printf("%s started as PID %d listening on %s\n", serverName, os.Getpid(), listen)
+		err := server.ListenAndServe()
+		if err != nil && err != http.ErrServerClosed {
+			log.Fatalln("ListenAndServe failed: ", err)
+		}
+	}()
+
+	<-shutdown
+
+	log.Println("shutting down")
+	ctx, cancel := context.WithTimeout(context.Background(), SHUTDOWN_TIMEOUT*time.Second)
+	defer cancel()
+
+	err := server.Shutdown(ctx)
+	if err != nil {
+		log.Fatalln("Server Shutdown failed: ", err)
+	}
+	log.Println("shutdown complete")
+}
+
+func stopHandler(sig os.Signal) error {
+	log.Println("received stop signal")
+	shutdown <- struct{}{}
+	return daemon.ErrStop
+}
+
+func reloadHandler(sig os.Signal) error {
+	log.Println("received reload signal")
+	return nil
 }
 
 func main() {
-	r := gin.Default()
-
-	authorized := r.Group("/api", gin.BasicAuth(gin.Accounts{
-		"admin": "admin",
-	}))
-
-	router := fastapi.NewRouter()
-	router.AddCall("/add", AddHostHandler)
-	router.AddCall("/delete", DeleteHostHandler)
-	router.AddCall("/list", ListHostsHandler)
-
-	err := AddOpenAPIDocs(r, router, "Reliance Systems Netboot Management API", true, true)
-	CheckErr("Adding OpenAPI docs", err)
-
-	authorized.POST("/api/*path", router.GinHandler)
-	r.Run()
+	addr := flag.String("addr", "127.0.0.1", "listen address")
+	port := flag.Int("port", 2014, "listen port")
+	debugFlag := flag.Bool("debug", false, "run in foreground mode")
+	flag.Parse()
+	if !*debugFlag {
+		daemonize(addr, port)
+		os.Exit(0)
+	}
+	go runServer(addr, port)
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM)
+	<-sigs
+	shutdown <- struct{}{}
+	os.Exit(0)
 }
 
-func AddOpenAPIDocs(engine *gin.Engine, router *fastapi.Router, title string, enableSwagger, enableRedoc bool) error {
-	if enableSwagger {
-		swaggerFiles, err := fs.Sub(swagger, "swagger")
-		if err != nil {
-			return fmt.Errorf("opening swagger subdirectory: %v", err)
-		}
-		engine.StaticFS("/swagger", http.FS(swaggerFiles))
+func daemonize(addr *string, port *int) {
+
+	daemon.AddCommand(daemon.StringFlag(signalFlag, "stop"), syscall.SIGTERM, stopHandler)
+	daemon.AddCommand(daemon.StringFlag(signalFlag, "reload"), syscall.SIGHUP, reloadHandler)
+
+	//PidFileName: "/var/run/utcd.pid",
+	//LogFileName: "/var/log/utcd.log",
+	ctx := &daemon.Context{
+		PidFilePerm: 0644,
+		WorkDir:     "/",
+		Umask:       027,
 	}
 
-	if enableRedoc {
-		redocFiles, err := fs.Sub(redoc, "redoc")
+	if len(daemon.ActiveFlags()) > 0 {
+		d, err := ctx.Search()
 		if err != nil {
-			return fmt.Errorf("opening redoc subdirectory: %v", err)
+			log.Fatalln("Unable to signal daemon: ", err)
 		}
-		engine.StaticFS("/redoc", http.FS(redocFiles))
-
+		daemon.SendCommands(d)
+		return
 	}
 
-	engine.GET("/v2/swagger.json", func(c *gin.Context) {
-		swagger := router.EmitOpenAPIDefinition()
-		swagger.Info.Title = title
-		c.JSON(http.StatusOK, swagger)
-	})
-	return nil
+	child, err := ctx.Reborn()
+	if err != nil {
+		log.Fatalln("Fork failed: ", err)
+	}
+
+	if child != nil {
+		return
+	}
+	defer ctx.Release()
+
+	go runServer(addr, port)
+
+	err = daemon.ServeSignals()
+	if err != nil {
+		log.Fatalln("Error: ServeSignals: ", err)
+	}
 }
