@@ -4,7 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"github.com/rstms/netbootd/netboot"
+	"github.com/rstms/nbd/netboot"
 	"github.com/sevlyar/go-daemon"
 	"log"
 	"net/http"
@@ -32,30 +32,30 @@ func handleEndpoints(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
 		switch r.URL.Path {
-		case "/hosts/":
+		case "/api/hosts/":
 			netboot.ListHostsHandler(w, r)
 			return
 		}
 	case "PUT":
 		switch r.URL.Path {
-		case "/host/":
+		case "/api/host/":
 			netboot.AddHostHandler(w, r)
 			return
 		}
 	case "DELETE":
 		switch r.URL.Path {
-		case "/host/":
+		case "/api/host/":
 			netboot.DeleteHostHandler(w, r)
 			return
 		}
 	case "POST":
 		switch r.URL.Path {
-		case "/tarball/":
+		case "/api/tarball/":
 			netboot.UploadPackageHandler(w, r)
 			return
 		}
 	}
-	http.Error(w, "WAT", http.StatusNotFound)
+	http.Error(w, "WAT?", http.StatusNotFound)
 
 }
 
@@ -121,12 +121,11 @@ func daemonize(addr *string, port *int) {
 	daemon.AddCommand(daemon.StringFlag(signalFlag, "stop"), syscall.SIGTERM, stopHandler)
 	daemon.AddCommand(daemon.StringFlag(signalFlag, "reload"), syscall.SIGHUP, reloadHandler)
 
-	//PidFileName: "/var/run/utcd.pid",
-	//LogFileName: "/var/log/utcd.log",
 	ctx := &daemon.Context{
-		PidFilePerm: 0644,
+		LogFileName: "/var/log/nbd.log",
+		LogFilePerm: 0600,
 		WorkDir:     "/",
-		Umask:       027,
+		Umask:       007,
 	}
 
 	if len(daemon.ActiveFlags()) > 0 {

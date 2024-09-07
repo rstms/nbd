@@ -1,0 +1,46 @@
+#!/bin/sh
+#
+set -e
+
+mac=$1
+arch=amd64
+codename=bookworm
+webroot=/var/www/htdocs/debian
+netboot=/var/www/netboot
+tempdir=$(mktemp -d)
+target=${netboot}/${mac}-initrd.gz
+
+fail() {
+  echo >&2 $0 "$@"
+  exit 1
+}
+
+cleanup() {
+  if [ -n "$tempdir" ]; then
+    if [ -e "$tmpdir" ]; then
+       rm -rf $tempdir
+    fi
+  fi
+}
+trap cleanup EXIT
+
+[ -n "$mac" ] || fail no MAC
+
+cd $tempdir
+
+get_file() {
+  cp $1 $2
+  chown 0:0 $2
+  chmod 0600 $2
+}
+
+get_file ${netboot}/${mac}-preseed.conf preseed.cfg
+get_file ${netboot}/${mac}-package.tgz install_package.tgz
+get_file ${webroot}/dists/${codename}/main/installer-${arch}/current/images/netboot/debian-installer/${arch}/initrd.gz initrd.gz
+gunzip initrd.gz
+echo "preseed.cfg" | cpio -H sv4cpio -o -A -F initrd
+echo "install_package.tgz" | cpio -H sv4cpio -o -A -F initrd
+gzip initrd
+mv initrd.gz ${target}
+chmod 0644 ${target}
+ls -l ${netboot}/${mac}*

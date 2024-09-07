@@ -1,4 +1,4 @@
-module github.com/rstms/netbootd
+module github.com/rstms/nbd
 
 go 1.23.0
 

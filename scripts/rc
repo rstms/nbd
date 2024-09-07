@@ -1,8 +1,10 @@
 #!/bin/ksh
 
-daemon="/usr/local/bin/netbootd"
-daemon_user=netboot
+daemon="/usr/local/bin/nbd"
+daemon_user=_nbd
 daemon_flags=
+daemon_logger=
+daemon_execdir=/
 rc_stop_signal=TERM
 rc_reload_signal=HUP
 

@@ -147,7 +147,7 @@ func AddHostHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = os.WriteFile(responsePathname, decodedBytes, 0640)
+	err = os.WriteFile(responsePathname, decodedBytes, 0660)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
