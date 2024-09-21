@@ -23,3 +23,7 @@ install:
 	install -o root -g netboot -m 0750 scripts/nbctl.py /usr/local/bin/nbctl
 	rcctl restart nbd
 
+
+test:
+	scripts/mkboot.openbsd 00:0c:29:70:b6:00
+
