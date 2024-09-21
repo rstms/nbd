@@ -1,0 +1,97 @@
+#!/bin/sh
+
+set -e
+set -x
+
+SRC_ISO=$1
+
+OSMAJOR=7
+OSMINOR=5
+OSREV=${OSMAJOR}.${OSMINOR}
+MACHINE=amd64
+
+fail() {
+    echo >&2 $0: "$@"
+    exit 1
+}
+
+vnd_clear() {
+    vnconfig -l | grep -q 'vnd0: not in use'
+}
+
+vnd_clear || fail 'vnd0 in use' 
+
+cleanup() {
+    mounted=$(mount | awk '/^\/dev\/vnd0/{ print $1 }')
+    if [ -n "$mounted" ]; then
+        umount $mounted
+    fi
+    vnd_clear || vnconfig -u vnd0
+}
+trap cleanup EXIT
+
+# create directory for cd filesystem
+rm -rf cd
+mkdir -p cd/${OSREV}/${MACHINE}
+mkdir cd/etc
+
+# mount source ISO and extract files
+rm -rf iso
+mkdir iso
+vnconfig vnd0 $SRC_ISO
+mount /dev/vnd0a iso
+cp iso/${OSREV}/${MACHINE}/bsd.rd bsd.rd
+cp iso/${OSREV}/${MACHINE}/cdbr cd/${OSREV}/${MACHINE}
+cp iso/${OSREV}/${MACHINE}/cdboot cd/${OSREV}/${MACHINE}
+umount iso
+rmdir iso
+
+# extract ramdisk from kernel
+rdsetroot -x bsd.rd ramdisk.img
+
+# mount ramdisk
+vnconfig -u vnd0
+vnconfig vnd0 ramdisk.img
+rm -rf rd
+mkdir rd
+mount /dev/vnd0a rd
+
+# modify ramdisk files
+step ca root >rd/etc/ssl/cert.pem
+chmod 0444 rd/etc/ssl/cert.pem
+cp certs/* rd/etc/ssl
+cp rc.netboot rd
+awk <rd/.profile '{print $0} /autoinstall -x/{print "\t/rc.netboot"}' >rd/profile
+mv rd/profile rd/.profile
+chmod 0755 rd/.profile
+
+# unmount ramdisk
+umount rd
+vnconfig -u vnd0
+rmdir rd
+
+# insert modified ramdisk into kernel
+rdsetroot bsd.rd ramdisk.img
+rm ramdisk.img
+
+# move kernel into cd filesystem
+mv bsd.rd cd/${OSREV}/${MACHINE}
+
+# point bootloader at ramdisk kernel
+echo "set image /${OSREV}/${MACHINE}/bsd.rd" >cd/etc/boot.conf
+
+mkdir cd/bin
+cp $(which gdl) cd/bin
+chmod +x cd/bin/*
+
+# build the iso
+mkhybrid -a -R -T -L -l -d -D -N -o netboot75.iso \
+        -A "OpenBSD ${OSREV} ${MACHINE} netboot CD" \
+	    -P "Copyright (c) `date +%Y` Theo de Raadt, The OpenBSD project" \
+	    -p "Theo de Raadt <deraadt@openbsd.org>, install modifications by Matt Krueger <mkrueger@rstms.net>" \
+	    -V "OpenBSD/${MACHINE}   ${OSREV} netboot CD" \
+	    -b ${OSREV}/${MACHINE}/cdbr \
+            -c ${OSREV}/${MACHINE}/boot.catalog \
+	    cd
+
+rm -rf cd

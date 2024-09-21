@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -28,13 +29,18 @@ var (
 
 func handleEndpoints(w http.ResponseWriter, r *http.Request) {
 
-	fmt.Printf("Request: %s %s %s (%d)\n", r.RemoteAddr, r.Method, r.RequestURI, r.ContentLength)
+	log.Printf("%s %s %s (%d)\n", r.RemoteAddr, r.Method, r.RequestURI, r.ContentLength)
 	switch r.Method {
 	case "GET":
 		switch r.URL.Path {
 		case "/api/hosts/":
 			netboot.ListHostsHandler(w, r)
 			return
+		default:
+			if strings.HasPrefix(r.URL.Path, "/api/booted/") {
+				netboot.HostBootedHandler(w, r)
+				return
+			}
 		}
 	case "PUT":
 		switch r.URL.Path {

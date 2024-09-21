@@ -1,11 +1,13 @@
 package netboot
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -48,7 +50,7 @@ type DeleteResponse struct {
 
 var MAC_PATTERN = regexp.MustCompile(`^([0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})$`)
 var IPXE_PATTERN = regexp.MustCompile(`^([0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})\.ipxe$`)
-var PKG_PATTERN = regexp.MustCompile(`^([0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})-package\.tgz$`)
+var PKG_PATTERN = regexp.MustCompile(`^([0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})\.tgz$`)
 
 func copyFile(dstPath, srcPath string) error {
 	srcFile, err := os.Open(srcPath)
@@ -68,17 +70,27 @@ func copyFile(dstPath, srcPath string) error {
 	return nil
 }
 
+func fail(w http.ResponseWriter, message string, status int) {
+	log.Printf("  [%d] %s", status, message)
+	http.Error(w, message, status)
+}
+
+func respond(w http.ResponseWriter, response any) {
+	log.Printf("  [200] %v", response)
+	json.NewEncoder(w).Encode(response)
+}
+
 func UploadPackageHandler(w http.ResponseWriter, r *http.Request) {
 
 	err := r.ParseMultipartForm(256 << 20) // limit file size to 256MB
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed parsing form: %v", err), http.StatusBadRequest)
+		fail(w, fmt.Sprintf("failed parsing form: %v", err), http.StatusBadRequest)
 		return
 	}
 
 	uploadFile, fileHeader, err := r.FormFile("uploadFile")
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed retreiving upload file: %v", err), http.StatusBadRequest)
+		fail(w, fmt.Sprintf("failed retreiving upload file: %v", err), http.StatusBadRequest)
 		return
 	}
 	defer uploadFile.Close()
@@ -86,24 +98,23 @@ func UploadPackageHandler(w http.ResponseWriter, r *http.Request) {
 	packageFilename := fileHeader.Filename
 
 	if !PKG_PATTERN.MatchString(packageFilename) {
-		http.Error(w, fmt.Sprintf("illegal filename: %s", packageFilename), http.StatusBadRequest)
+		fail(w, fmt.Sprintf("illegal filename: %s", packageFilename), http.StatusBadRequest)
 		return
 	}
 
 	packageFile, err := os.Create(filepath.Join(netbootDir, packageFilename))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		fail(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	defer packageFile.Close()
 	fileBytes, err := io.Copy(packageFile, uploadFile)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		fail(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	var out = Response{Message: fmt.Sprintf("%v bytes written", fileBytes)}
-	json.NewEncoder(w).Encode(out)
+	respond(w, Response{Message: fmt.Sprintf("%v bytes written", fileBytes)})
 }
 
 func AddHostHandler(w http.ResponseWriter, r *http.Request) {
@@ -111,64 +122,66 @@ func AddHostHandler(w http.ResponseWriter, r *http.Request) {
 	var in Config
 	err := json.NewDecoder(r.Body).Decode(&in)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		fail(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	if !MAC_PATTERN.MatchString(in.Address) {
-		http.Error(w, "invalid MAC address", http.StatusBadRequest)
-		return
-	}
-	var osMenuPathname string
-	var responsePathname string
-	switch in.OS {
-	case "debian":
-		osMenuPathname = filepath.Join(netbootDir, "netboot-debian.ipxe")
-		responsePathname = filepath.Join(netbootDir, fmt.Sprintf("%s-preseed.conf", in.Address))
-	case "openbsd":
-		osMenuPathname = filepath.Join(netbootDir, "netboot-openbsd.ipxe")
-		responsePathname = filepath.Join(netbootDir, fmt.Sprintf("%s-install.conf", in.Address))
-	default:
-		http.Error(w, "unrecognized OS", http.StatusBadRequest)
+		fail(w, "invalid MAC address", http.StatusBadRequest)
 		return
 	}
 
+	switch in.OS {
+	case "debian":
+	case "openbsd":
+	default:
+		fail(w, "unrecognized OS", http.StatusBadRequest)
+		return
+	}
+
+	osMenuPathname := filepath.Join(netbootDir, fmt.Sprintf("netboot-%s.ipxe", in.OS))
+	responsePathname := filepath.Join(netbootDir, fmt.Sprintf("%s.conf", in.Address))
 	hostMenuPathname := filepath.Join(netbootDir, fmt.Sprintf("%s.ipxe", in.Address))
 
 	err = copyFile(hostMenuPathname, osMenuPathname)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		fail(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	decodedBytes, err := base64.StdEncoding.DecodeString(in.Config)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		fail(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	err = os.WriteFile(responsePathname, decodedBytes, 0660)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		fail(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	outputLines := []string{}
-
-	if in.OS == "debian" {
-		cmd := exec.Command("/usr/bin/doas", "/usr/local/bin/mkinitrd.debian", in.Address)
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			http.Error(w, fmt.Sprintf("mkinitrd.debian: %v", err), http.StatusBadRequest)
-			return
+	script := fmt.Sprintf("/root/mkboot.%s", in.OS)
+	cmd := exec.Command("/usr/bin/doas", script, in.Address)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	if err != nil {
+		log.Printf("script %s failed: %v\n", script, err)
+		for _, eline := range strings.Split(stderr.String(), "\n") {
+			log.Printf("stderr: %s\n", eline)
 		}
-		if len(output) > 0 {
-			outputLines = strings.Split(string(output), "\n")
-		}
+		fail(w, fmt.Sprintf("%s: %v", script, err), http.StatusBadRequest)
+		return
 	}
+	if cmd.ProcessState.ExitCode() != 0 {
+		log.Fatalf("uncaught process failure")
+	}
+	outputLines := strings.Split(stdout.String(), "\n")
 
-	var out = AddResponse{Message: fmt.Sprintf("%s configured", in.Address), Output: outputLines}
-	json.NewEncoder(w).Encode(out)
+	respond(w, AddResponse{Message: fmt.Sprintf("%s configured", in.Address), Output: outputLines})
 }
 
 func deleteHostFiles(address string) ([]string, error) {
@@ -199,33 +212,46 @@ func DeleteHostHandler(w http.ResponseWriter, r *http.Request) {
 	var in Host
 	err := json.NewDecoder(r.Body).Decode(&in)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		fail(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	if !MAC_PATTERN.MatchString(in.Address) {
-		http.Error(w, "invalid MAC address", http.StatusBadRequest)
+		fail(w, "invalid MAC address", http.StatusBadRequest)
 		return
 	}
 
+	deleteAddressFiles(in.Address, w)
+}
+
+func deleteAddressFiles(inAddress string, w http.ResponseWriter) {
 	addresses, err := hostAddresses()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		fail(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	for _, address := range addresses {
-		if strings.ToLower(in.Address) == strings.ToLower(address) {
+		if strings.ToLower(inAddress) == strings.ToLower(address) {
 			files, err := deleteHostFiles(address)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				fail(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			var response = DeleteResponse{Message: fmt.Sprintf("deleted: %d", len(files)), Files: files}
-			json.NewEncoder(w).Encode(response)
+			respond(w, DeleteResponse{Message: fmt.Sprintf("deleted: %d", len(files)), Files: files})
 			return
 		}
 	}
-	http.Error(w, "host address not found", http.StatusNotFound)
+	fail(w, "host address not found", http.StatusNotFound)
+}
+
+func HostBootedHandler(w http.ResponseWriter, r *http.Request) {
+	segments := strings.Split(r.URL.Path, "/")
+	if len(segments) > 3 {
+		address := segments[3]
+		deleteAddressFiles(address, w)
+		return
+	}
+	fail(w, "invalid path", http.StatusBadRequest)
 }
 
 func hostAddresses() ([]string, error) {
@@ -248,10 +274,9 @@ func hostAddresses() ([]string, error) {
 func ListHostsHandler(w http.ResponseWriter, r *http.Request) {
 	addresses, err := hostAddresses()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		fail(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	var out = HostListResponse{Message: fmt.Sprintf("config count: %d", len(addresses)), Addresses: addresses}
-	json.NewEncoder(w).Encode(out)
+	respond(w, HostListResponse{Message: fmt.Sprintf("config count: %d", len(addresses)), Addresses: addresses})
 }

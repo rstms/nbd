@@ -1,0 +1,78 @@
+#!/bin/ksh
+
+FUNCS_ONLY=1
+. /autoinstall
+
+ehandler() {
+    echo "netboot configuration failed. rebooting..."
+    sleep 10
+    reboot
+}
+trap ehandler EXIT
+    
+set -e
+set -x
+
+configure_netboot() {
+    local _nbif _mac _disk
+
+    _nbif=$(get_ifs)
+    if [ -n "$_nbif" ]; then
+        echo "netboot interface: $_nbif"
+        ifconfig $_nbif group netboot
+    else
+        echo "interface not detected"
+        exit 1
+    fi
+  
+    if [[ -x /sbin/dhcpleased ]]; then
+        echo dhcpleased is present and executable
+    else
+        echo dhcpleased is not executable!
+        exit 1
+    fi
+
+    ifconfig $_nbif inet autoconf up
+  
+    if ! wait_for_dhcp_info $_nbif 30; then
+        echo "DHCP config timeout on interface $_nbif"
+        exit 1
+    fi
+
+    echo "Setting clock from https://netboot.rstms.net/utc..."
+    ftp -S noverifytime https://netboot.rstms.net/utc
+    date -f '%s' $(cat utc)
+    
+    _disk=$(echo -e $(sysctl hw.disknames | sed 's/[,=]/\\n/g')|sed -n '/^[^cr]d[0-9]:/s/:.*//p')
+    echo "Using disk $_disk"
+    
+    cd /dev
+    . ./MAKEDEV $_disk
+    cd /
+    disklabel -Aw $_disk
+    newfs /dev/r${_disk}a
+    mkdir -p /usr/local/bin
+    mount /dev/${_disk}a /usr/local/bin
+    
+    cd /usr/local/bin
+    ftp https://netboot.rstms.net/netboot/curl.tgz
+    tar zxf curl.tgz
+    . ./install
+    
+    cd /
+    _mac=$(if_name_to_lladdr $_nbif)
+    /usr/local/bin/ftp https://netboot.rstms.net/${_mac}-install.conf
+    mv ${_mac}-install.conf auto_install.conf
+    
+    umount /usr/local/bin
+    dd if=/dev/zero of=/dev/${_disk}c count=128
+    
+    ifconfig $_nbif inet -autoconf delete down 2>/dev/null || true
+    rm -f /var/db/dhcpleased/$_nbif || true
+}
+
+configure_netboot
+
+# disable reboot on error
+trap - EXIT
+

@@ -1,0 +1,292 @@
+#!/bin/sh
+
+# make openbsd boot cd ISO
+
+set -e
+
+mac=$1
+
+OSMAJOR=7
+OSMINOR=5
+OSREV=${OSMAJOR}.${OSMINOR}
+MACHINE=amd64
+
+netboot=/var/www/netboot
+
+SRC_ISO=/var/www/htdocs/pub/OpenBSD/${OSREV}/${MACHINE}/cd${OSMAJOR}${OSMINOR}.iso
+DST_ISO=${netboot}/${mac}.iso
+
+fail() {
+  echo >&2 $0: "$@"
+  exit 1
+}
+
+vnd_clear() {
+    vnconfig -l | grep -q 'vnd0: not in use'
+}
+
+vnd_clear || fail 'vnd0 in use' 
+
+cleanup() {
+    if [ -n "$tempdir" ]; then
+	if [ -e "$tmpdir" ]; then
+	    rm -rf $tempdir
+	fi
+    fi
+    mounted=$(mount | awk '/^\/dev\/vnd0/{ print $1 }')
+    if [ -n "$mounted" ]; then
+	umount $mounted
+    fi
+    vnd_clear || vnconfig -u vnd0
+}
+
+tempdir=$(mktemp -d)
+trap cleanup EXIT
+
+[ -n "$mac" ] || fail no MAC
+
+cd $tempdir
+
+get_file() {
+  cp $1 $2
+  chown 0:0 $2
+  chmod 0600 $2
+}
+
+write_rc_netboot() {
+    cat -<<'EOF'
+#!/bin/ksh
+
+FUNCS_ONLY=1
+. /autoinstall
+
+ehandler() {
+    echo "netboot configuration failed. rebooting..."
+    sleep 10
+    reboot
+}
+trap ehandler EXIT
+    
+set -e
+set -x
+
+configure_netboot() {
+    local _nbif _mac _disk
+
+    _nbif=$(get_ifs)
+    if [ -n "$_nbif" ]; then
+        echo "netboot interface: $_nbif"
+        ifconfig $_nbif group netboot
+    else
+        echo "interface not detected"
+        exit 1
+    fi
+  
+    if [[ -x /sbin/dhcpleased ]]; then
+        echo dhcpleased is present and executable
+    else
+        echo dhcpleased is not executable!
+        exit 1
+    fi
+
+    ifconfig $_nbif inet autoconf up
+  
+    if ! wait_for_dhcp_info $_nbif 30; then
+        echo "DHCP config timeout on interface $_nbif"
+        exit 1
+    fi
+
+    echo "Setting clock from https://netboot.rstms.net/utc..."
+    ftp -S noverifytime https://netboot.rstms.net/utc
+    date -f '%s' $(cat utc)
+
+    _disk=$(echo -e $(sysctl hw.disknames | sed 's/[,=]/\\n/g')|sed -n '/^[^cr]d[0-9]:/s/:.*//p')
+    echo "Using disk $_disk"
+    
+    cd /dev
+    . ./MAKEDEV $_disk
+    cd /
+    disklabel -Aw $_disk
+    newfs /dev/r${_disk}a
+    mkdir -p /usr/local
+    mount /dev/${_disk}a /usr/local
+    
+    cd /usr/local
+    ftp https://netboot.rstms.net/gdl.tgz
+    tar zxf gdl.tgz
+    chmod 0755 bin/*
+    bin/install_gdl
+    cd /
+
+    _mac=$(if_name_to_lladdr $_nbif)
+    /usr/local/bin/gdl -ca /etc/ssl/keymaster.pem -cert /etc/ssl/netboot.pem -key /etc/ssl/netboot.key https://netboot.rstms.net/${_mac}.conf
+    mv ${_mac}.conf auto_install.conf
+
+    echo "${_mac}" >/tmp/ai/ai_mac
+
+    umount /usr/local
+    dd if=/dev/zero of=/dev/${_disk}c count=128
+    
+    ifconfig $_nbif inet -autoconf delete down 2>/dev/null || true
+    rm -f /var/db/dhcpleased/$_nbif || true
+}
+
+configure_netboot
+
+# disable reboot on error
+trap - EXIT
+EOF
+}
+
+write_rc_package() {
+    cat -<<'EOF'
+#!/bin/ksh
+
+ehandler() {
+    echo "site package install failed. rebooting..."
+    sleep 10
+    reboot
+}
+trap ehandler EXIT
+    
+set -e
+
+install_site_package() {
+    local _mac
+    local _url
+    local _gdl
+    _mac=$(cat /tmp/ai/ai_mac)
+    _url=https://netboot.rstms.net
+    _gdl='/usr/local/bin/gdl -ca /etc/ssl/keymaster.pem -cert /etc/ssl/netboot.pem -key /etc/ssl/netboot.key'
+    echo "Downloading ${_url}/gdl.tgz..."
+    cd /mnt/usr/local/bin
+    ftp ${_url}/gdl.tgz
+    tar zxf gdl.tgz bin/gdl
+    mv bin/gdl .
+    rm -rf bin
+    chmod 0755 gdl
+    rm gdl.tgz
+    cd /
+    cp /etc/ssl/keymaster.pem /mnt/etc/ssl
+    cp /etc/ssl/netboot.pem /mnt/etc/ssl
+    cp /etc/ssl/netboot.key /mnt/etc/ssl
+    chmod 0444 /mnt/etc/ssl/*.pem
+    chmod 0400 /mnt/etc/ssl/netboot.key
+    echo "Downloading ${_url}/${_mac}.tgz..."
+    chroot /mnt ${_gdl} ${_url}/${_mac}.tgz
+    echo "Installing site package ${_mac}.tgz..."
+    chroot /mnt tar xzvphf /${_mac}.tgz
+    chmod 0755 /mnt
+    rm -f /mnt/${_mac}.tgz
+    if [ -x /mnt/postinstall ]; then
+	echo "Running postinstall..."
+	chroot /mnt /postinstall
+    fi
+    rm -f /mnt/postinstall
+    if [ -x /mnt/install.site ]; then
+	echo "Running install.site..."
+	chroot /mnt /install.site
+    fi
+    rm -f /mnt/install.site
+    echo "${_gdl} ${_url}/api/booted/${_mac} /dev/null" >>/mnt/etc/rc.firsttime
+    echo "rm -f /etc/ssl/netboot.pem" >>/mnt/etc/rc.firsttime
+    echo "rm -f /etc/ssl/netboot.key" >>/mnt/etc/rc.firsttime
+}
+
+install_site_package
+
+trap - EXIT
+
+EOF
+}
+
+# create directory for cd filesystem
+mkdir -p cd/${OSREV}/${MACHINE}
+mkdir cd/etc
+
+# mount source ISO and extract files
+mkdir iso
+vnconfig vnd0 $SRC_ISO
+mount /dev/vnd0a iso
+cp iso/${OSREV}/${MACHINE}/bsd* cd/${OSREV}/${MACHINE}/
+cp iso/${OSREV}/${MACHINE}/cdb* cd/${OSREV}/${MACHINE}/
+
+umount iso
+rmdir iso
+
+#gunzip cd/${OSREV}/${MACHINE}/bsd.rd -o bsd.rd
+
+# extract ramdisk from kernel
+rdsetroot -x cd/${OSREV}/${MACHINE}/bsd.rd ramdisk.img
+
+# mount ramdisk
+vnconfig -u vnd0
+vnconfig vnd0 ramdisk.img
+rm -rf rd
+mkdir rd
+mount /dev/vnd0a rd
+
+# modify ramdisk files
+write_rc_netboot >rd/rc.netboot
+chown root.wheel rd/rc.netboot
+chmod 0755 rd/rc.netboot
+
+write_rc_package >rd/rc.package
+chown root.wheel rd/rc.package
+chmod 0755 rd/rc.package
+
+# extract /etc/ssl from tarball to ramdisk /etc/ssl
+tar zxf ${netboot}/${mac}.tgz etc/ssl
+
+# install certs to ramdisk /etc/ssl
+install -o root -g wheel -m 0444 etc/ssl/keymaster.pem rd/etc/ssl/keymaster.pem
+install -o root -g wheel -m 0444 etc/ssl/netboot.pem rd/etc/ssl/netboot.pem
+install -o root -g wheel -m 0400 etc/ssl/netboot.key rd/etc/ssl/netboot.key
+
+# replace ramdisk CA with keymaster.pem
+install -o root -g wheel -m 0444 etc/ssl/keymaster.pem rd/etc/ssl/cert.pem
+
+# remove tarball etc/ssl dir
+rm -rf etc
+
+# add rc.netboot call to ramdisk /.profile
+awk <rd/.profile '{print $0} /autoinstall -x/{print "\t/rc.netboot"}' >rd/profile
+mv rd/profile rd/.profile
+chmod 0755 rd/.profile
+
+# add rc.package call to ramdisk /install.sub
+awk <rd/install.sub '/exec reboot$/{ print "\t/rc.package" } {print $0}' >rd/_install.sub
+mv rd/_install.sub rd/install.sub
+chmod 0755 rd/install.sub
+
+
+# unmount ramdisk
+umount rd
+vnconfig -u vnd0
+rmdir rd
+
+# insert modified ramdisk into cd image kernel
+rdsetroot cd/${OSREV}/${MACHINE}/bsd.rd ramdisk.img
+rm ramdisk.img
+
+# compress kernel and write into cd filesystem
+#gzip -9cn bsd.rd >cd/${OSREV}/${MACHINE}/bsd.rd
+
+# point bootloader at ramdisk kernel
+echo "set image /${OSREV}/${MACHINE}/bsd.rd" >cd/etc/boot.conf
+
+#install -o root -g wheel -m 0600 ${netboot}/${mac}.tgz cd/${OSREV}/${MACHINE}/package.tgz
+#install -s -o root -g wheel -m 0755 $(which gdl) cd/${OSREV}/${MACHINE}/gdl
+
+# build the iso
+mkhybrid -a -R -T -L -l -d -D -N -o $DST_ISO \
+        -A "OpenBSD ${OSREV} ${MACHINE} netboot CD" \
+	    -P "Copyright (c) `date +%Y` Theo de Raadt, The OpenBSD project" \
+	    -p "Theo de Raadt <deraadt@openbsd.org>, install modifications by Matt Krueger <mkrueger@rstms.net>" \
+	    -V "OpenBSD/${MACHINE}   ${OSREV} netboot CD" \
+	    -b ${OSREV}/${MACHINE}/cdbr \
+            -c ${OSREV}/${MACHINE}/boot.catalog \
+	    cd
+
+/root/nbdperm
+ls -l ${netboot}/${mac}*

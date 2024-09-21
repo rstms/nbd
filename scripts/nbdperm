@@ -1,0 +1,7 @@
+#!/bin/sh
+cd /var/www/netboot
+for F in $(ls *.tgz; ls netboot.*; ls|awk '/^(([0-9a-fA-F]){2}:){5}([0-9a-fA-F]){2}/{print $0} /.*\.ipxe$/{print $0}'); do
+    chown _nbd.www $F
+    chmod 0640 $F
+done
+
