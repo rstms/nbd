@@ -22,6 +22,7 @@ type Config struct {
 	Address string `json:"address"`
 	OS      string `json:"os"`
 	Version string `json:"version"`
+	Serial  string `json:"serial"`
 	Config  string `json:"config"`
 }
 
@@ -162,7 +163,11 @@ func AddHostHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	script := fmt.Sprintf("/root/mkboot.%s", in.OS)
-	cmd := exec.Command("/usr/bin/doas", script, in.Address)
+	args := []string{script, in.Address}
+	if in.Serial != "" {
+		args = append(args, in.Serial)
+	}
+	cmd := exec.Command("/usr/bin/doas", args...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	var stderr bytes.Buffer

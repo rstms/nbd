@@ -4,7 +4,20 @@
 
 set -e
 
+# default fqdn
+netboot_fqdn=netboot.rstms.net
+
+. /etc/nbd.conf
+
+echo https://${netboot_fqdn}
+
 mac=$1
+if [ $# -gt 1 ]; then
+    serial=$2
+    echo "Serial serial console selected"
+else
+    serial=
+fi
 
 OSMAJOR=7
 OSMINOR=5
@@ -92,8 +105,20 @@ trap ehandler EXIT
 set -e
 set -x
 
+netboot_update_image() {
+
+    echo "Updating preinstalled image..."
+    mkdir -p /mnt
+    mount /dev/${_disk}a /mnt
+    chroot /mnt /bin/sh -c "mount -a"
+    /rc.package
+    echo "Update complete."
+}
+
 configure_netboot() {
-    local _nbif _mac _disk
+    local _nbif _mac _disk _iter _url
+
+    . /netboot.env
 
     _nbif=$(get_ifs)
     if [ -n "$_nbif" ]; then
@@ -118,8 +143,17 @@ configure_netboot() {
         exit 1
     fi
 
-    echo "Setting clock from https://netboot.rstms.net/utc..."
-    ftp -S noverifytime https://netboot.rstms.net/utc
+    echo "Setting clock from ${_url}/utc..."
+    _iter=0
+    while [ $_iter -lt 10 ]; do
+	_iter=$(( $_iter + 1 ))
+	if ftp -S noverifytime ${_url}/utc; then
+	    break
+	else
+	    echo retrying...
+	    sleep 1
+	fi
+    done
     date -f '%s' $(cat utc)
 
     _disk=$(echo -e $(sysctl hw.disknames | sed 's/[,=]/\\n/g')|sed -n '/^[^cr]d[0-9]:/s/:.*//p')
@@ -128,23 +162,28 @@ configure_netboot() {
     cd /dev
     . ./MAKEDEV $_disk
     cd /
+
+    if [ -e /install.image ]; then
+        netboot_update_image
+	trap - EXIT
+	reboot
+    fi
+
+    dd if=/dev/zero of=/dev/${_disk}c count=128
     disklabel -Aw $_disk
     newfs /dev/r${_disk}a
     mkdir -p /usr/local
     mount /dev/${_disk}a /usr/local
     
     cd /usr/local
-    ftp https://netboot.rstms.net/gdl.tgz
+    ftp ${_url}/gdl.tgz
     tar zxf gdl.tgz
     chmod 0755 bin/*
     bin/install_gdl
     cd /
 
-    _mac=$(if_name_to_lladdr $_nbif)
-    /usr/local/bin/gdl -ca /etc/ssl/keymaster.pem -cert /etc/ssl/netboot.pem -key /etc/ssl/netboot.key https://netboot.rstms.net/${_mac}.conf
+    /usr/local/bin/gdl -ca /etc/ssl/keymaster.pem -cert /etc/ssl/netboot.pem -key /etc/ssl/netboot.key ${_url}/${_mac}.conf
     mv ${_mac}.conf auto_install.conf
-
-    echo "${_mac}" >/tmp/ai/ai_mac
 
     umount /usr/local
     dd if=/dev/zero of=/dev/${_disk}c count=128
@@ -177,17 +216,21 @@ install_site_package() {
     local _mac
     local _url
     local _gdl
-    _mac=$(cat /tmp/ai/ai_mac)
-    _url=https://netboot.rstms.net
+    . /netboot.env
     _gdl='/usr/local/bin/gdl -ca /etc/ssl/keymaster.pem -cert /etc/ssl/netboot.pem -key /etc/ssl/netboot.key'
-    echo "Downloading ${_url}/gdl.tgz..."
-    cd /mnt/usr/local/bin
-    ftp ${_url}/gdl.tgz
-    tar zxf gdl.tgz bin/gdl
-    mv bin/gdl .
-    rm -rf bin
-    chmod 0755 gdl
-    rm gdl.tgz
+    if [ -x /mnt/usr/local/bin/gdl ]; then
+	echo "Using existing gdl:"
+	ls -l /mnt/usr/local/bin/gdl
+    else 
+	echo "Downloading ${_url}/gdl.tgz..."
+	cd /mnt/usr/local/bin
+	ftp ${_url}/gdl.tgz
+	tar zxf gdl.tgz bin/gdl
+	mv bin/gdl .
+	rm -rf bin
+	chmod 0755 gdl
+	rm gdl.tgz
+    fi
     cd /
     cp /etc/ssl/keymaster.pem /mnt/etc/ssl
     cp /etc/ssl/netboot.pem /mnt/etc/ssl
@@ -210,6 +253,13 @@ install_site_package() {
 	chroot /mnt /install.site
     fi
     rm -f /mnt/install.site
+
+    if [ -x /mnt/install.image ]; then
+	echo "Running install.image..."
+	chroot /mnt /install.image
+    fi
+    rm -f /mnt/install.image
+
     echo "${_gdl} ${_url}/api/booted/${_mac} /dev/null" >>/mnt/etc/rc.firsttime
     echo "rm -f /etc/ssl/netboot.pem" >>/mnt/etc/rc.firsttime
     echo "rm -f /etc/ssl/netboot.key" >>/mnt/etc/rc.firsttime
@@ -238,9 +288,19 @@ modify_ramdisk_on_vnd1() {
   write_rc_package >rd/rc.package
   chown root.wheel rd/rc.package
   chmod 0755 rd/rc.package
-  
+
+  echo "_url=https://${netboot_fqdn}" >rd/netboot.env
+  echo "_mac='${mac}'" >>rd/netboot.env
+  chmod 0644 rd/netboot.env
+
   # extract /etc/ssl from tarball to ramdisk /etc/ssl
   tar zxf ${netboot}/${mac}.tgz etc/ssl
+
+  # extract /install.image from tarball to ramdisk /
+  if tar zxf ${netboot}/${mac}.tgz install.image 2>/dev/null; then
+      echo "Image update script detected."
+      install -o root -g wheel -m 0755 install.image rd/install.image
+  fi
   
   # install certs to ramdisk /etc/ssl
   install -o root -g wheel -m 0444 etc/ssl/keymaster.pem rd/etc/ssl/keymaster.pem
@@ -249,7 +309,7 @@ modify_ramdisk_on_vnd1() {
   
   # replace ramdisk CA with keymaster.pem
   install -o root -g wheel -m 0444 etc/ssl/keymaster.pem rd/etc/ssl/cert.pem
-  
+
   # remove tarball etc/ssl dir
   rm -rf etc
   
@@ -270,118 +330,127 @@ modify_ramdisk_on_vnd1() {
 
 }
 
-## begin IMG
+build_img() {
 
-# create dest image
-dd if=/dev/zero of=$DST_IMG bs=1024K count=10
-vnconfig vnd0 $DST_IMG
+  # create dest image
+  dd if=/dev/zero of=$DST_IMG bs=1024K count=10 2>/dev/null
+  vnconfig vnd0 $DST_IMG
+  
+  # partition
+  fdisk -b960 -g -y vnd0
+  disklabel -wA vnd0
+  newfs /dev/rvnd0a
+  
+  # mount dst on vnd0
+  mkdir dst
+  mount /dev/vnd0a dst
+  
+  # mount src image on vnd1
+  mkdir src
+  vnconfig vnd1 $SRC_IMG
+  mount /dev/vnd1a src
+  
+  # copy EFI partition 
+  dd if=/dev/vnd1i of=/dev/vnd0i 
+  
+  # copy src files to dst
+  cp -rp src/boot dst/boot
+  cp -rp src/etc dst/etc
+  
+  # copy src compressed ramdisk kernel
+  cp src/bsd.rd bsd.rd.gz
+  
+  # umount source and free up vnd1
+  umount src
+  vnconfig -u vnd1
+  rmdir src
+  
+  # unzip compressed kernel from source image
+  gunzip bsd.rd.gz
+  
+  # extract ramdisk from kernel
+  rdsetroot -x bsd.rd ramdisk.img
+  
+  cp ramdisk.img img_ramdisk.img
+  
+  modify_ramdisk_on_vnd1
+  
+  # insert modified ramdisk into cd image kernel
+  rdsetroot bsd.rd ramdisk.img
+  rm ramdisk.img
+  
+  # compress kernel and write into cd filesystem
+  gzip -9cn bsd.rd >dst/bsd.rd
+  ln dst/bsd.rd dst/bsd
+  
+  # point bootloader at ramdisk kernel
+  echo "set image /bsd.rd" >dst/etc/boot.conf
+  
+  # optionally enable serial
+  if [ -n "$serial" ]; then
+    echo "set tty $serial" >>dst/etc/boot.conf
+  fi
+  
+  umount dst
+  
+  # install bootloaders
+  installboot -v vnd0
+  
+  # free up vnd0
+  vnconfig -u vnd0
+}
 
-# partition
-fdisk -b960 -g -y vnd0
-disklabel -wA vnd0
-newfs /dev/rvnd0a
 
-# mount dst on vnd0
-mkdir dst
-mount /dev/vnd0a dst
+build_iso() {
 
-# mount src image on vnd1
-mkdir src
-vnconfig vnd1 $SRC_IMG
-mount /dev/vnd1a src
+  # create directory for cd filesystem
+  mkdir -p cd/${OSREV}/${MACHINE}
+  mkdir cd/etc
+  
+  # mount source ISO on vnd0 and extract files
+  mkdir iso
+  vnconfig vnd0 $SRC_ISO
+  mount /dev/vnd0a iso
+  cp iso/${OSREV}/${MACHINE}/bsd* cd/${OSREV}/${MACHINE}/
+  cp iso/${OSREV}/${MACHINE}/cdb* cd/${OSREV}/${MACHINE}/
+  
+  # free up vnd0
+  umount iso
+  vnconfig -u vnd0
+  rmdir iso
+  
+  # extract ramdisk from kernel
+  rdsetroot -x cd/${OSREV}/${MACHINE}/bsd.rd ramdisk.img
+  
+  modify_ramdisk_on_vnd1
+  
+  cp ramdisk.img mod_cd_ramdisk.img
+  
+  # insert modified ramdisk into cd image kernel
+  rdsetroot cd/${OSREV}/${MACHINE}/bsd.rd ramdisk.img
+  rm ramdisk.img
+  
+  # point bootloader at ramdisk kernel
+  echo "set image /${OSREV}/${MACHINE}/bsd.rd" >cd/etc/boot.conf
+  
+  # optionally enable serial
+  if [ -n "$serial" ]; then
+    echo "set tty $serial" >>cd/etc/boot.conf
+  fi
+  
+  # build the iso
+  mkhybrid -a -R -T -L -l -d -D -N -o $DST_ISO \
+          -A "OpenBSD ${OSREV} ${MACHINE} netboot CD" \
+  	    -P "Copyright (c) `date +%Y` Theo de Raadt, The OpenBSD project" \
+  	    -p "Theo de Raadt <deraadt@openbsd.org>, install modifications by Matt Krueger <mkrueger@rstms.net>" \
+  	    -V "OpenBSD/${MACHINE}   ${OSREV} netboot CD" \
+  	    -b ${OSREV}/${MACHINE}/cdbr \
+              -c ${OSREV}/${MACHINE}/boot.catalog \
+  	    cd
+}
 
-find src
-exit
-
-# copy EFI partition 
-dd if=/dev/vnd1i of=/dev/vnd0i
-
-# copy src files to dst
-cp -rp src/boot dst/boot
-cp -rp src/etc dst/etc
-
-# unzip compressed kernel from source image
-gunzip src/bsd.rd -o bsd.rd
-
-# umount source and free up vnd1
-umount src
-vnconfig -u vnd1
-rmdir src
-
-# extract ramdisk from kernel
-rdsetroot -x bsd.rd ramdisk.img
-
-cp ramdisk.img img_ramdisk.img
-
-modify_ramdisk_on_vnd1
-
-# insert modified ramdisk into cd image kernel
-rdsetroot bsd.rd ramdisk.img
-rm ramdisk.img
-
-# compress kernel and write into cd filesystem
-gzip -9cn bsd.rd >dst/bsd.rd
-ln dst/bsd.rd dst/bsd
-
-# point bootloader at ramdisk kernel
-echo "set tty com0" >dst/etc/boot.conf
-echo "set image /bsd.rd" >>dst/etc/boot.conf
-
-umount dst
-
-# install bootloaders
-installboot -v vnd0
-
-# free up vnd0
-vnconfig -u vnd0
-rmdir dst
-
-### end IMG
-
-
-### begin ISO
-
-# create directory for cd filesystem
-mkdir -p cd/${OSREV}/${MACHINE}
-mkdir cd/etc
-
-# mount source ISO on vnd0 and extract files
-mkdir iso
-vnconfig vnd0 $SRC_ISO
-mount /dev/vnd0a iso
-cp iso/${OSREV}/${MACHINE}/bsd* cd/${OSREV}/${MACHINE}/
-cp iso/${OSREV}/${MACHINE}/cdb* cd/${OSREV}/${MACHINE}/
-
-# free up vnd0
-umount iso
-vnconfig -u vnd0
-rmdir iso
-
-# extract ramdisk from kernel
-rdsetroot -x cd/${OSREV}/${MACHINE}/bsd.rd ramdisk.img
-
-cp ramdisk.img cd_ramdisk.img
-
-modify_ramdisk_on_vnd1
-
-# insert modified ramdisk into cd image kernel
-rdsetroot cd/${OSREV}/${MACHINE}/bsd.rd ramdisk.img
-rm ramdisk.img
-
-# point bootloader at ramdisk kernel
-echo "set tty com0" >cd/etc/boot.conf
-echo "set image /${OSREV}/${MACHINE}/bsd.rd" >>cd/etc/boot.conf
-
-# build the iso
-mkhybrid -a -R -T -L -l -d -D -N -o $DST_ISO \
-        -A "OpenBSD ${OSREV} ${MACHINE} netboot CD" \
-	    -P "Copyright (c) `date +%Y` Theo de Raadt, The OpenBSD project" \
-	    -p "Theo de Raadt <deraadt@openbsd.org>, install modifications by Matt Krueger <mkrueger@rstms.net>" \
-	    -V "OpenBSD/${MACHINE}   ${OSREV} netboot CD" \
-	    -b ${OSREV}/${MACHINE}/cdbr \
-            -c ${OSREV}/${MACHINE}/boot.catalog \
-	    cd
+#build_image
+build_iso
 
 /root/nbdperm
 ls -l ${netboot}/${mac}*
-cmp img_ramdisk.img cd_ramdisk.img

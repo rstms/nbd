@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+[ $(id -u) == 0 ] || { echo >&2 "You are not root."; exit 1; }
+dir=/home/mkrueger/go/src/github.com/rstms/nbd/deploy
+cd $dir
+make certs.tgz
+su - mkrueger -c "scp $dir/certs.tgz cloudboot:."
+su - mkrueger -c "ssh cloudboot doas /root/update_certs"
+cd $dir
+make clean

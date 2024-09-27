@@ -25,5 +25,9 @@ install:
 
 
 test:
-	scripts/mkboot.openbsd 00:0c:29:70:b6:00
+	scripts/mkboot.openbsd 00:0c:29:46:8a:61 com0
 
+
+.PHONY: deploy
+deploy:
+	cd deploy; doas ./update_cloudboot

@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+domains="netboot localboot cloudboot"
+for domain in $domains; do
+    /usr/local/bin/ipctl dns delete $domain || true
+    /usr/local/bin/ipctl dns add $domain 192.168.66.6
+done
+/usr/sbin/acme-client netboot.rstms.net
+/usr/sbin/rcctl reload nginx
+/usr/local/bin/ipctl dns delete netboot
+/usr/local/bin/ipctl dns delete cloudboot
+/usr/local/bin/ipctl dns add cloudboot $(/usr/local/bin/dnsip netboot.rstms.net)
+/home/mkrueger/go/src/github.com/rstms/nbd/deploy/update_certs

@@ -1,0 +1,28 @@
+#!/bin/sh
+pfctl -f /etc/pf.conf
+pkg_add -u nginx
+id netboot || useradd -md /var/www/netboot -g=uid -L default -p "" -s nologin netboot
+id _nbd || useradd -d /var/empty -g=uid -L daemon -p "" -s nologin _nbd
+id _utcd || useradd -d /var/empty -g=uid -L daemon -p "" -s nologin _utcd
+usermod -G www _nbd
+chgrp -R www /var/www/netboot
+chmod 0775 /var/www/netboot
+rm -rf /var/www/htdocs/btplg
+
+touch /var/log/nbd.log
+chown root._nbd /var/log/nbd.log
+chmod 0660 /var/log/nbd.log
+rcctl enable nbd
+rcctl restart nbd
+
+touch /var/log/utcd.log
+chown root._utcd /var/log/utcd.log
+chmod 0660 /var/log/utcd.log
+rcctl enable utcd
+rcctl restart utcd
+
+rcctl disable httpd
+rcctl stop httpd
+
+rcctl enable nginx
+rcctl restart nginx

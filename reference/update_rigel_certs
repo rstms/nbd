@@ -1,0 +1,4 @@
+#!/bin/sh
+set -e
+/usr/sbin/acme-client rigel.rstms.net
+rcctl reload nginx

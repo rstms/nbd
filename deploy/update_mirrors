@@ -1,0 +1,8 @@
+#!/bin/sh
+set -e
+cmd="ssh cloudboot doas /root/update_mirrors"
+if [ $(id -u) == 0 ]; then
+  su - mkrueger -c "$cmd"
+else
+  $cmd
+fi

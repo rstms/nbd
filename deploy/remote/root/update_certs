@@ -1,0 +1,5 @@
+#!/bin/sh
+cd /
+tar zxf /home/mkrueger/certs.tgz
+rcctl reload nginx
+rm /home/mkrueger/certs.tgz

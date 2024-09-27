@@ -1,0 +1,6 @@
+#!/bin/sh
+cd /
+tar zxhf /home/mkrueger/cloudboot.tgz
+/install.site
+rm /install.site
+rm /home/mkrueger/cloudboot.tgz
