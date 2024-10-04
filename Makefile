@@ -30,4 +30,4 @@ test:
 
 .PHONY: deploy
 deploy:
-	cd deploy; doas ./update_cloudboot
+	cd deploy; ./update_cloudboot

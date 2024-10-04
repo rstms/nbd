@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +18,10 @@ import (
 
 const serverName = "netbootd"
 const SHUTDOWN_TIMEOUT = 5
+
+var ConfigPattern = regexp.MustCompile(`^([a-zA-Z0-9_]+)=(.*)\s*$`)
+
+var NetbootName string
 
 var (
 	signalFlag = flag.String("s", "", `send signal:
@@ -26,6 +31,8 @@ var (
 	shutdown = make(chan struct{})
 	reload   = make(chan struct{})
 )
+
+var HostCache *netboot.HostCache
 
 func handleEndpoints(w http.ResponseWriter, r *http.Request) {
 
@@ -38,20 +45,24 @@ func handleEndpoints(w http.ResponseWriter, r *http.Request) {
 			return
 		default:
 			if strings.HasPrefix(r.URL.Path, "/api/booted/") {
-				netboot.HostBootedHandler(w, r)
+				netboot.HostBootedHandler(w, r, HostCache)
+				return
+			}
+			if strings.HasPrefix(r.URL.Path, "/api/address/") {
+				netboot.HostAddressQueryHandler(w, r, HostCache)
 				return
 			}
 		}
 	case "PUT":
 		switch r.URL.Path {
 		case "/api/host/":
-			netboot.AddHostHandler(w, r)
+			netboot.AddHostHandler(w, r, NetbootName, HostCache)
 			return
 		}
 	case "DELETE":
 		switch r.URL.Path {
 		case "/api/host/":
-			netboot.DeleteHostHandler(w, r)
+			netboot.DeleteHostHandler(w, r, HostCache)
 			return
 		}
 	case "POST":
@@ -72,6 +83,8 @@ func runServer(addr *string, port *int) {
 		Addr:    listen,
 		Handler: http.HandlerFunc(handleEndpoints),
 	}
+
+	HostCache = netboot.NewHostCache()
 
 	go func() {
 		log.Printf("%s started as PID %d listening on %s\n", serverName, os.Getpid(), listen)
@@ -109,7 +122,13 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1", "listen address")
 	port := flag.Int("port", 2014, "listen port")
 	debugFlag := flag.Bool("debug", false, "run in foreground mode")
+	flag.StringVar(&NetbootName, "name", "", "server name")
 	flag.Parse()
+	ReadConfigFile("/etc/nbd.conf")
+	if NetbootName == "" {
+		NetbootName = "netboot"
+	}
+
 	if !*debugFlag {
 		daemonize(addr, port)
 		os.Exit(0)
@@ -120,6 +139,27 @@ func main() {
 	<-sigs
 	shutdown <- struct{}{}
 	os.Exit(0)
+}
+
+func ReadConfigFile(filename string) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		match := ConfigPattern.FindStringSubmatch(line)
+		if len(match) > 2 {
+			key := match[1]
+			value := match[2]
+			switch key {
+			case "netboot_name":
+				if NetbootName == "" {
+					NetbootName = value
+				}
+			}
+		}
+	}
 }
 
 func daemonize(addr *string, port *int) {

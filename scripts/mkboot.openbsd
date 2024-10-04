@@ -7,14 +7,16 @@ set -e
 # default fqdn
 netboot_fqdn=netboot.rstms.net
 
-. /etc/nbd.conf
+if [ -e /etc/nbd.conf ]; then
+  . /etc/nbd.conf
+fi
 
 echo https://${netboot_fqdn}
 
 mac=$1
 if [ $# -gt 1 ]; then
     serial=$2
-    echo "Serial serial console selected"
+    echo "Serial console: '${serial}'"
 else
     serial=
 fi

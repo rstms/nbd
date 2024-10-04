@@ -30,6 +30,11 @@ type Host struct {
 	Address string `json:"address"`
 }
 
+type HostAddressResponse struct {
+	MAC string `json:"mac"`
+	IP  string `json:"ip"`
+}
+
 type Response struct {
 	Message string `json:"message"`
 }
@@ -52,6 +57,16 @@ type DeleteResponse struct {
 var MAC_PATTERN = regexp.MustCompile(`^([0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})$`)
 var IPXE_PATTERN = regexp.MustCompile(`^([0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})\.ipxe$`)
 var PKG_PATTERN = regexp.MustCompile(`^([0-9A-Fa-f]{2}:){5}([0-9A-Fa-f]{2})\.tgz$`)
+
+type HostCache struct {
+	IP map[string]string
+}
+
+func NewHostCache() *HostCache {
+	c := HostCache{}
+	c.IP = make(map[string]string)
+	return &c
+}
 
 func copyFile(dstPath, srcPath string) error {
 	srcFile, err := os.Open(srcPath)
@@ -118,7 +133,7 @@ func UploadPackageHandler(w http.ResponseWriter, r *http.Request) {
 	respond(w, Response{Message: fmt.Sprintf("%v bytes written", fileBytes)})
 }
 
-func AddHostHandler(w http.ResponseWriter, r *http.Request) {
+func AddHostHandler(w http.ResponseWriter, r *http.Request, name string, cache *HostCache) {
 
 	var in Config
 	err := json.NewDecoder(r.Body).Decode(&in)
@@ -132,6 +147,8 @@ func AddHostHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cache.IP[in.Address] = ""
+
 	switch in.OS {
 	case "debian":
 	case "openbsd":
@@ -140,7 +157,7 @@ func AddHostHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	osMenuPathname := filepath.Join(netbootDir, fmt.Sprintf("netboot-%s.ipxe", in.OS))
+	osMenuPathname := filepath.Join(netbootDir, fmt.Sprintf("%s-%s.ipxe", name, in.OS))
 	responsePathname := filepath.Join(netbootDir, fmt.Sprintf("%s.conf", in.Address))
 	hostMenuPathname := filepath.Join(netbootDir, fmt.Sprintf("%s.ipxe", in.Address))
 
@@ -213,7 +230,7 @@ func deleteHostFiles(address string) ([]string, error) {
 	return deletedFiles, nil
 }
 
-func DeleteHostHandler(w http.ResponseWriter, r *http.Request) {
+func DeleteHostHandler(w http.ResponseWriter, r *http.Request, cache *HostCache) {
 	var in Host
 	err := json.NewDecoder(r.Body).Decode(&in)
 	if err != nil {
@@ -225,7 +242,7 @@ func DeleteHostHandler(w http.ResponseWriter, r *http.Request) {
 		fail(w, "invalid MAC address", http.StatusBadRequest)
 		return
 	}
-
+	cache.IP[in.Address] = ""
 	deleteAddressFiles(in.Address, w)
 }
 
@@ -247,13 +264,29 @@ func deleteAddressFiles(inAddress string, w http.ResponseWriter) {
 		}
 	}
 	fail(w, "host address not found", http.StatusNotFound)
+	return
 }
 
-func HostBootedHandler(w http.ResponseWriter, r *http.Request) {
+func HostBootedHandler(w http.ResponseWriter, r *http.Request, cache *HostCache) {
 	segments := strings.Split(r.URL.Path, "/")
 	if len(segments) > 3 {
 		address := segments[3]
+		if len(segments) > 4 {
+			ip := segments[4]
+			cache.IP[address] = ip
+		}
 		deleteAddressFiles(address, w)
+		return
+
+	}
+	fail(w, "invalid path", http.StatusBadRequest)
+}
+
+func HostAddressQueryHandler(w http.ResponseWriter, r *http.Request, cache *HostCache) {
+	segments := strings.Split(r.URL.Path, "/")
+	if len(segments) > 3 {
+		address := segments[3]
+		respond(w, HostAddressResponse{MAC: address, IP: cache.IP[address]})
 		return
 	}
 	fail(w, "invalid path", http.StatusBadRequest)

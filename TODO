@@ -1,0 +1,4 @@
+- generate dynamic path for each netboot
+- use nginx ngx_http_secure_link_module to accept only valid dynamic paths
+- run debcache on netboot.rstms.net
+- add IP cache persistence across nbd restart
