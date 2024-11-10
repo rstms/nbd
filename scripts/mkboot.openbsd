@@ -158,8 +158,9 @@ configure_netboot() {
     done
     date -f '%s' $(cat utc)
 
-    _disk=$(echo -e $(sysctl hw.disknames | sed 's/[,=]/\\n/g')|sed -n '/^[^cr]d[0-9]:/s/:.*//p')
-    echo "Using disk $_disk"
+    echo "Disknames: '$(sysctl hw.disknames)' "
+    _disk=$(sysctl hw.disknames | sed -n 's/.*[,=]\([^cr]d0\):.*/\1/p;q')
+    echo "Using disk '$_disk'"
     
     cd /dev
     . ./MAKEDEV $_disk
@@ -245,26 +246,35 @@ install_site_package() {
     chroot /mnt tar xzvphf /${_mac}.tgz
     chmod 0755 /mnt
     rm -f /mnt/${_mac}.tgz
+    mkdir /mnt/root/.netboot
+    chmod 0700 /mnt/root/.netboot
     if [ -x /mnt/postinstall ]; then
 	echo "Running postinstall..."
-	chroot /mnt /postinstall
+        cp /mnt/postinstall /mnt/root/.netboot/postinstall
+	chroot /mnt sh -c '/postinstall 2>/root/.netboot/postinstall.stderr | tee /root/.netboot/postinstall.stdout'
+	echo $? >/mnt/root/.netboot/postinstall.exitcode
     fi
     rm -f /mnt/postinstall
     if [ -x /mnt/install.site ]; then
 	echo "Running install.site..."
-	chroot /mnt /install.site
+        cp /mnt/install.site /mnt/root/.netboot/install.site
+	chroot /mnt sh -c '/install.site 2>/root/.netboot/install.site.stderr | tee /root/.netboot/install.site.stdout'
+	echo $? >/mnt/root/.netboot/install.site.exitcode
     fi
     rm -f /mnt/install.site
 
     if [ -x /mnt/install.image ]; then
 	echo "Running install.image..."
-	chroot /mnt /install.image
+	cp /mnt/install.image /mnt/root/.netboot/install.image
+	chroot /mnt sh -c '/install.image 2>/root/.netboot/install.image.stderr | tee /root/.netboot/install.image.stdout'
+	echo $? > /mnt/root/.netboot/install.image.exitcode
     fi
     rm -f /mnt/install.image
 
     echo "${_gdl} ${_url}/api/booted/${_mac} /dev/null" >>/mnt/etc/rc.firsttime
     echo "rm -f /etc/ssl/netboot.pem" >>/mnt/etc/rc.firsttime
     echo "rm -f /etc/ssl/netboot.key" >>/mnt/etc/rc.firsttime
+    cp /mnt/etc/rc.firsttime /mnt/root/.netboot/rc.firsttime
 }
 
 install_site_package

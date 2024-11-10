@@ -152,6 +152,7 @@ func AddHostHandler(w http.ResponseWriter, r *http.Request, name string, cache *
 	switch in.OS {
 	case "debian":
 	case "openbsd":
+	case "alpine":
 	default:
 		fail(w, "unrecognized OS", http.StatusBadRequest)
 		return
