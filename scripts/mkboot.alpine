@@ -1,10 +1,14 @@
 #!/bin/sh
 
 mac=$1
-version=3.20.3
-short_version=3.20
 
-src_tarball=/var/www/htdocs/pub/alpine/alpine-netboot-${version}-x86_64.tar.gz*
+major=3
+minor=30
+patch=3
+version=${major}.${minor}.${patch}
+arch=x86_x64
+
+src_tarball=/var/www/htdocs/pub/alpine/alpine-netboot-${version}-${arch}.tar.gz*
 target=/var/www/netboot/${mac}
 
 tempdir=$(mktemp -d)
@@ -18,15 +22,13 @@ cp $tempdir/boot/initramfs-virt $target.initrd
 cp $tempdir/boot/modloop-virt $target.modloop
 cp $tempdir/boot/vmlinuz-virt $target.vmlinuz
 
-hostname=alpbox
-username=mkrueger
-pubkey="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIABDHDQj9f7H055m5wyr0z3xyCdhdTgaqlWNPN7Q9Aah mkrueger@phobos"
-
 rm -rf $tempdir/ovl
 rm -f ${dst_iso}
- 
 
-echo "howdy" >$tempdir/ovl/etc/howdy
+tar zxv $target.tgz -O $tempdir/ovl
+
+mkdir -p $tempdir/ovl/etc
+date > $tempdir/ovl/etc/mkboot.alpine.executed
 
 mkdir -p $tempdir/ovl/etc/runlevels/default
 touch $tempdir/ovl/etc/.default_boot_services
@@ -34,80 +36,20 @@ ln -sf /etc/init.d/local $tempdir/ovl/etc/runlevels/default
 
 mkdir $tempdir/ovl/etc/apk
 cat >$tempdir/ovl/etc/apk/repositories <<EOF
-https://dl-cdn.alpinelinux.org/alpine/v${short_version}/main
-https://dl-cdn.alpinelinux.org/alpine/v${short_version}/community
+https://dl-cdn.alpinelinux.org/alpine/v${major}.${minor}/main
+https://dl-cdn.alpinelinux.org/alpine/v${major}.${minor}/community
 EOF
 
 mkdir $tempdir/ovl/etc/local.d
-cat >$tempdir/ovl/etc/local.d/auto-setup-alpine.start <<EOF
-#!/bin/sh
-
-echo "auto-setup script running" >/root/autosetup_started
-exec >/root/autostart.out
-exec 2>/root/autostart.err
-
-set -o errexit
-set -o nounset
-
-# Uncomment to shutdown on completion.
-#trap 'poweroff' EXIT INT
-
-# Close standard input.
-exec 0<&-
-
-# Run only once.
-rm -f /etc/local.d/auto-setup-alpine.start
-rm -f /etc/runlevels/default/local
-
-timeout 300 setup-alpine -ef /etc/auto-setup-alpine/answers
-rm -rf /etc/auto-setup-alpine
-
-# Disable password authentication
-sed -i -e 's/^root:x:/root:*:/' -e 's/^${username}:x:/${username}:*:/' /etc/passwd
-sed -i -e 's/^root:[^:]*/root:*/' -e 's/^${username}:[^:]*/${username}:*/' /etc/shadow
-
-apk update
-apk upgrade
-
-apk add man-pages mandoc mandoc-apropos docs
-
-echo "permit nopass :wheel" >/etc/doas.d/site.conf
-echo "permit nopass keepenv root" >>/etc/doas.d/site.conf
-
-# Uncomment for sys install.
-sed -i -e 's/relatime/noatime/' /etc/fstab
-EOF
-
+mv ovl/postinstall ovl/etc/local.d/auto-setup-alpine.start
 chmod 0755 $tempdir/ovl/etc/local.d/auto-setup-alpine.start
 
 mkdir $tempdir/ovl/etc/auto-setup-alpine
-cat >$tempdir/ovl/etc/auto-setup-alpine/answers <<EOF
-# answer file for setup-alpine script
-KEYMAPOPTS="us us"
-HOSTNAMEOPTS=${hostname}
-DEVDOPTS=mdev
-INTERFACESOPTS="auto lo
-iface lo inet loopback
-
-auto eth0
-iface eth0 inet dhcp
-hostname ${hostname}
-"
-TIMEZONEOPTS="US/Mountain"
-PROXYOPTS=none
-APKREPOSOPTS="-1"
-USEROPTS="-a -u -g audio,video,netdev ${username}"
-USERSSHKEY="${pubkey}"
-SSHDOPTS=openssh
-NTPOPTS="openntpd"
-#DISKOPTS="-m sys /dev/nvme0n1"
-DISKOPTS=none
-LBUOPTS=none
-APKCACHEOPTS=none
-EOF
+cp $target.conf $tempdir/ovl/etc/auto-setup-alpine/answers
+chown 0.0 $tempdir/ovl/etc/auto-setup-alpine/answers
+chmod 0644 $tempdir/ovl/etc/auto-setup-alpine/answers
 
 tar zcf ${target}.apkovl.tar.gz -C $tempdir/ovl .
 
 /root/nbdperm
 ls -al ${target}.*
-
