@@ -2,7 +2,7 @@
 
 # make openbsd boot cd ISO
 
-set -e
+set -ue
 
 # default fqdn
 netboot_fqdn=netboot.rstms.net
@@ -56,7 +56,7 @@ vnd2_clear || fail 'vnd2 in use'
 
 cleanup() {
     if [ -n "$tempdir" ]; then
-	if [ -e "$tmpdir" ]; then
+	if [ -e "$tempdir" ]; then
 	    rm -rf $tempdir
 	fi
     fi

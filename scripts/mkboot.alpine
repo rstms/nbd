@@ -1,55 +1,67 @@
 #!/bin/sh
 
+set -ue
+
 mac=$1
-
-major=3
-minor=30
-patch=3
-version=${major}.${minor}.${patch}
-arch=x86_x64
-
-src_tarball=/var/www/htdocs/pub/alpine/alpine-netboot-${version}-${arch}.tar.gz*
 target=/var/www/netboot/${mac}
 
+version=$(awk '/^# macro: version/{print $4}' <$target.conf)
+major=$(echo $version | awk -F. '{print $1}')
+minor=$(echo $version | awk -F. '{print $2}')
+patch=$(echo $version | awk -F. '{print $3}')
+
+arch=$(awk '/^# macro: arch/{print $4}' <$target.conf)
+
+start_dir=$(pwd)
 tempdir=$(mktemp -d)
 cleanup(){
-    #rm -rf $tempdir
+    cd $start_dir
+    [ -e $tempdir ] && rm -rf $tempdir
 }
 trap cleanup EXIT
 
-tar -zxf $src_tarball -C $tempdir
-cp $tempdir/boot/initramfs-virt $target.initrd
-cp $tempdir/boot/modloop-virt $target.modloop
-cp $tempdir/boot/vmlinuz-virt $target.vmlinuz
+cd $tempdir
 
-rm -rf $tempdir/ovl
-rm -f ${dst_iso}
+mkdir alpine
+tar zxf /var/www/htdocs/pub/alpine/alpine-netboot-${version}-${arch}.tar.gz -C alpine
+cp alpine/boot/initramfs-virt $target.initrd
+cp alpine/boot/modloop-virt $target.modloop
+cp alpine/boot/vmlinuz-virt $target.vmlinuz
+rm -rf alpine
 
-tar zxv $target.tgz -O $tempdir/ovl
+cp $target.tgz package.tgz
 
-mkdir -p $tempdir/ovl/etc
-date > $tempdir/ovl/etc/mkboot.alpine.executed
+mkdir etc
+touch etc/.default_boot_services
 
-mkdir -p $tempdir/ovl/etc/runlevels/default
-touch $tempdir/ovl/etc/.default_boot_services
-ln -sf /etc/init.d/local $tempdir/ovl/etc/runlevels/default
+mkdir etc/ssl
+tar xzf package.tgz etc/ssl/keymaster.pem
+tar xzf package.tgz etc/ssl/netboot.pem
+tar xzf package.tgz etc/ssl/netboot.key
+chmod 0644 etc/ssl/keymaster.pem
 
-mkdir $tempdir/ovl/etc/apk
-cat >$tempdir/ovl/etc/apk/repositories <<EOF
+mkdir -p etc/runlevels/default
+ln -sf /etc/init.d/local etc/runlevels/default
+
+mkdir -p etc/apk
+cat >etc/apk/repositories <<EOF
 https://dl-cdn.alpinelinux.org/alpine/v${major}.${minor}/main
 https://dl-cdn.alpinelinux.org/alpine/v${major}.${minor}/community
 EOF
 
-mkdir $tempdir/ovl/etc/local.d
-mv ovl/postinstall ovl/etc/local.d/auto-setup-alpine.start
-chmod 0755 $tempdir/ovl/etc/local.d/auto-setup-alpine.start
+mkdir etc/local.d
+tar xzf package.tgz postinstall
+mv postinstall etc/local.d/auto-setup-alpine.start
+chmod 0755 etc/local.d/auto-setup-alpine.start
 
-mkdir $tempdir/ovl/etc/auto-setup-alpine
-cp $target.conf $tempdir/ovl/etc/auto-setup-alpine/answers
-chown 0.0 $tempdir/ovl/etc/auto-setup-alpine/answers
-chmod 0644 $tempdir/ovl/etc/auto-setup-alpine/answers
+mkdir etc/auto-setup-alpine
+cp $target.conf etc/auto-setup-alpine/answers
+chown 0.0 etc/auto-setup-alpine/answers
+chmod 0644 etc/auto-setup-alpine/answers
 
-tar zcf ${target}.apkovl.tar.gz -C $tempdir/ovl .
+tar czf ${target}.apkovl.tar.gz .
+
+find .
 
 /root/nbdperm
 ls -al ${target}.*

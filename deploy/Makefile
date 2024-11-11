@@ -28,7 +28,9 @@ pkg:
 	cp /etc/rc.d/utcd pkg/etc/rc.d
 	cp /root/mkboot.openbsd pkg/root
 	cp /root/mkboot.debian pkg/root
+	cp /root/mkboot.alpine pkg/root
 	cp /root/nbdperm pkg/root
+	cp /root/update_mirrors pkg/root
 	cp /etc/ssl/keymaster.pem pkg/etc/ssl
 	cp /etc/ssl/netboot.rstms.net.fullchain.pem pkg/etc/ssl
 	cp /etc/ssl/private/netboot.rstms.net.key pkg/etc/ssl/private
