@@ -1,0 +1,66 @@
+#!/bin/sh
+
+set -ueo pipefail
+
+openbsd_version=7.5
+debian_version=bookworm
+alpine_major=3
+alpine_minor=20
+alpine_patch=3
+
+cache=$(mktemp -d)
+cleanup() {
+  rm -rf $cache
+}
+trap cleanup EXIT
+
+arch=amd64
+htdocs=/var/www/htdocs
+openbsd_mirror=cdn.openbsd.org
+debian_mirror=ftp.us.debian.org
+alpine_mirror=dl-cdn.alpinelinux.org
+alpine_arch=x86_64
+
+openbsd_url() {
+  printf "https://%s/pub/OpenBSD/%s/%s/" ${openbsd_mirror} ${openbsd_version} ${arch}
+}
+
+debian_url() {
+  printf "http://%s/debian/dists/%s/main/installer-%s/current/images/netboot/debian-installer/%s/" ${debian_mirror} ${debian_version} ${arch} ${arch}
+}
+
+alpine_url() {
+  printf "https://%s/alpine/v%s.%s/releases/%s/alpine-netboot-%s.%s.%s-%s.tar.gz" \
+	${alpine_mirror} ${alpine_major} ${alpine_minor} ${alpine_arch} \
+	${alpine_major} ${alpine_minor} ${alpine_patch} ${alpine_arch}
+}
+
+update_openbsd() {
+  ( cd $cache; wget --no-parent -r $(openbsd_url); )
+  mkdir -p ${htdocs}/pub/OpenBSD/${openbsd_version}
+  rm -rf ${htdocs}/pub/OpenBSD/${openbsd_version}/${arch}
+  cp -rpv ${cache}/${openbsd_mirror}/pub/OpenBSD/${openbsd_version}/${arch} ${htdocs}/pub/OpenBSD/${openbsd_version}
+  rm -rf ${cache}/${openbsd_mirror}
+}
+
+update_debian() {
+  ( cd $cache; wget --no-parent -r $(debian_url); )
+  mkdir -p ${htdocs}/debian/dists
+  rm -rf ${htdocs}/debian/dists/${debian_version}
+  cp -rpv ${cache}/${debian_mirror}/debian/dists/${debian_version} ${htdocs}/debian/dists
+  rm -rf ${cache}/${debian_mirror}
+}
+
+update_alpine() {
+  rm -rf ${htdocs}/pub/alpine/*.tar.gz
+  (cd ${htdocs}/pub/alpine; wget $(alpine_url); )
+}
+
+update_openbsd &
+update_debian &
+update_alpine &
+
+wait
+chown -R root.www ${htdocs}/pub
+chmod -R 0644 ${htdocs}/pub
+find ${htdocs}/pub -type d -exec chmod 0755 \{\} \;

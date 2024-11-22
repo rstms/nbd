@@ -17,7 +17,7 @@ fail() {
 
 cleanup() {
   if [ -n "$tempdir" ]; then
-    if [ -e "$tmpdir" ]; then
+    if [ -e "$tempdir" ]; then
        rm -rf $tempdir
     fi
   fi
