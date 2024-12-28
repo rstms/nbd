@@ -19,11 +19,12 @@ import (
 const netbootDir = "/var/www/netboot"
 
 type Config struct {
-	Address string `json:"address"`
-	OS      string `json:"os"`
-	Version string `json:"version"`
-	Serial  string `json:"serial"`
-	Config  string `json:"config"`
+	Address           string `json:"address"`
+	OS                string `json:"os"`
+	Version           string `json:"version"`
+	Serial            string `json:"serial"`
+	Config            string `json:"config"`
+	DisklabelTemplate string `json:"disklabel_template"`
 }
 
 type Host struct {
@@ -161,6 +162,7 @@ func AddHostHandler(w http.ResponseWriter, r *http.Request, name string, cache *
 	osMenuPathname := filepath.Join(netbootDir, fmt.Sprintf("%s-%s.ipxe", name, in.OS))
 	responsePathname := filepath.Join(netbootDir, fmt.Sprintf("%s.conf", in.Address))
 	hostMenuPathname := filepath.Join(netbootDir, fmt.Sprintf("%s.ipxe", in.Address))
+	disklabelTemplatePathname := filepath.Join(netbootDir, fmt.Sprintf("%s.disklabel_template", in.Address))
 
 	err = copyFile(hostMenuPathname, osMenuPathname)
 	if err != nil {
@@ -178,6 +180,14 @@ func AddHostHandler(w http.ResponseWriter, r *http.Request, name string, cache *
 	if err != nil {
 		fail(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	if in.DisklabelTemplate != "" {
+		err = os.WriteFile(disklabelTemplatePathname, []byte(in.DisklabelTemplate+"\n"), 0660)
+		if err != nil {
+			fail(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 
 	script := fmt.Sprintf("/root/mkboot.%s", in.OS)
