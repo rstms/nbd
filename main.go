@@ -16,6 +16,8 @@ import (
 	"time"
 )
 
+const Version = "0.0.1"
+
 const serverName = "netbootd"
 const SHUTDOWN_TIMEOUT = 5
 
@@ -87,7 +89,7 @@ func runServer(addr *string, port *int) {
 	HostCache = netboot.NewHostCache()
 
 	go func() {
-		log.Printf("%s started as PID %d listening on %s\n", serverName, os.Getpid(), listen)
+		log.Printf("%s v%s started as PID %d listening on %s\n", serverName, Version, os.Getpid(), listen)
 		err := server.ListenAndServe()
 		if err != nil && err != http.ErrServerClosed {
 			log.Fatalln("ListenAndServe failed: ", err)
