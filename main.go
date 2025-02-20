@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const Version = "0.0.2"
+const Version = "0.0.3"
 
 const serverName = "netbootd"
 const SHUTDOWN_TIMEOUT = 5
